@@ -1,0 +1,55 @@
+*.*~
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+*.pyc
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+##
+*.cmake
+Makefile
+catkin 
+CMakeCache.txt 
+cmake_install.cmake 
+CTestTestfile.cmake 
+gtest
+Makefile 
+devel/
+devel/* 
+CMakeFiles/ 
+CMakeFiles/* 
+test_results/
+test_results/*
+catkin_generated 
+catkin_generated/*
+/.project
+.vscode/*.json
+/CMakeLists.txt~
+src/felucia_common_msgs/*.pcy
+/missions.db
+.project
