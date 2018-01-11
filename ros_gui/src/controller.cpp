@@ -16,6 +16,9 @@
 #include <sstream>
 #include "../include/ros_gui/controller.hpp"
 
+#include <iostream>
+#include <opencv2/core/core.hpp>
+
 /*****************************************************************************
 ** Namespaces
 *****************************************************************************/
@@ -26,11 +29,12 @@ namespace ros_gui {
 ** Implementation
 *****************************************************************************/
 
-//Para matrizes de ponderaзгo: Q 100*I e R = I
+//Para matrizes de ponderação: Q 100*I e R = I
 const float Controller::Kdlqr[3][6] = {
     { 0.0000,   -7.3404,    0.1982,    0.0000,   -5.0455,    0.3356},
     { 6.3570,    3.6702,    0.1982,    4.3695,    2.5227,    0.3356},
-    {-6.3570,    3.6702,    0.1982,   -4.3695,    2.5227,    0.3356}};
+    {-6.3570,    3.6702,    0.1982,   -4.3695,    2.5227,    0.3356}
+                           };
 
 /*Referentes ao preditor Otimo*/
 const float Controller::Ag[6][6] = {
@@ -39,7 +43,8 @@ const float Controller::Ag[6][6] = {
     {     0,         0,    0.5888,         0,         0,         0},
     {0.8218,         0,         0,    1.0000,         0,         0},
     {     0,    0.8218,         0,         0,    1.0000,         0},
-    {     0,         0,    0.5888,         0,         0,    1.0000}};
+    {     0,         0,    0.5888,         0,         0,    1.0000}
+                        };
 
 const float Controller::Bg[6][3] = {
     {      0,    0.0400,   -0.0400},
@@ -47,20 +52,56 @@ const float Controller::Bg[6][3] = {
     { 0.9868,    0.9868,    0.9868},
     {      0,    0.0400,   -0.0400},
     {-0.0461,    0.0231,    0.0231},
-    { 0.9868,    0.9868,    0.9868}};
+    { 0.9868,    0.9868,    0.9868}
+                        };
 
 /*Referentes ao preditor de Smith*/
 const float Controller::Ad[3][3] = {
     {0.8218,         0,         0},
     {     0,    0.8218,         0},
-    {     0,         0,    0.5888}};
+    {     0,         0,    0.5888}
+                        };
 
 const float Controller::Bd[3][3] = {
     {        0,    0.0400,   -0.0400},
     {    -0.0461,    0.0231,    0.0231},
-    {    0.9868,    0.9868,    0.9868}};
+    {    0.9868,    0.9868,    0.9868}
+                        };
 
-const float Controller::alpha = 0.85;
+const float Controller::Cd[3][3] = {
+                         {1, 0, 0},
+                         {0, 1, 0},
+                         {0, 0, 1}
+                        };
+
+ Mat AA;
+ Mat BB;
+ Mat CC;
+
+ Mat Q;
+ Mat R;
+
+ Mat W;
+
+ float TrajX[100];             //vetor contendo a trajetória em X
+ float TrajY[100];             //vetor contendo a trajetória em Y
+ float TrajTheta[100];
+ int Index;
+ int TrajPoints;
+ int TrajOK;
+
+ float xr,yr,theta;
+
+ float Vref[3]; //Ainda é utilizado devido ao log
+ float dU[3], U[3];
+ float vel[3], old_vel[3];
+ float velrad[3];
+ float x[3], old_x[3];
+ float xFiltrado[3];
+ float velm[3], new_velm[3];
+ float difvel[3];
+
+ char PWM[4];
 
 Controller::Controller(int argc, char** argv ) :
 	init_argc(argc),
@@ -75,6 +116,8 @@ Controller::~Controller() {
 	wait();
 }
 
+
+
 bool Controller::init(SerialPort* device) {
 	ros::init(init_argc,init_argv,"ros_gui_controller");
 	if ( ! ros::master::check() ) {
@@ -84,115 +127,303 @@ bool Controller::init(SerialPort* device) {
 	ros::start(); // explicitly needed since our nodehandle is going out of scope.
 	ros::NodeHandle n;
 
+  dataReceived = false;
+  enable = false;
 
-    dataReceived = false;
-    enable = false;
+  /*-----------------init matrices----------------*/
 
-    /*-----------------init vectors-----------------*/
+  // Matrizes Aumentadas
+  cv::Mat Aa = (cv::Mat_<float>(6,6) << 0.8218, 0, 0, 0, 0, 0,
+                                        0, 0.8218, 0, 0, 0, 0,
+                                        0, 0, 0.5888, 0, 0, 0,
+                                        0.8218, 0, 0, 1, 0, 0,
+                                        0, 0.8218, 0, 0, 1, 0,
+                                        0, 0, 0.5888, 0, 0, 1);
 
-    vel[0] = vel[1] = vel[2] = 0;
+  cv::Mat Ba = (cv::Mat_<float>(6,3) <<   0,    0.0400,   -0.0400,
+                                          -0.0461,    0.0231,    0.0231,
+                                          0.9868,    0.9868,    0.9868,
+                                          0,    0.0400,   -0.0400,
+                                          -0.0461,    0.0231,    0.0231,
+                                          0.9868,    0.9868,    0.9868);
 
-    xFiltrado[0] = xFiltrado[1] = xFiltrado[2] = 0;
+  //Produzindo as Matrizes Caligraficas
+  AA.create(0,0,CV_32F);
+  BB.create(0,0,CV_32F);
+  CC = Mat::eye(3*HP, 6*HP, CV_32F);
 
-    velm[0] = velm[1] = velm[2] = 0;
+  Q = Mat::eye(3*HP, 3*HP, CV_32F)*25;
+  R = Mat::eye(3*HC, 3*HC, CV_32F);
 
-	  x[0] = x[1] = x[2] = 0;
+  Mat aux_Ba;
+  Mat aux_Aa;
 
-	  dU[0] = dU[1] = dU[2] = 0;
-    U[0] = U[1] = U[2] = 0;
+  aux_Ba.create(0,0,CV_32F);
+  aux_Aa.create(0,0,CV_32F);
 
-    PWM[0] = PWM[1] = PWM[2] = PWM[3] = 0;
+  aux_Ba.push_back(Ba);
+  aux_Aa.push_back(Aa);
 
-    /*-----------------init trajectory-----------------*/
+  Mat aux_BB = Ba;
+  AA.push_back(Aa);
 
-    TrajOK = 0;
-    Index = 0;
-    TrajPoints = 23;
+  for(int i = 1; i < HP; i++) {
+      aux_Ba = aux_Aa*Ba;
+      aux_Aa = aux_Aa*Aa;
 
-//Circulo:
-   TrajX[0] = 0.0000;
-   TrajY[0] = 0.0000;
-   TrajTheta[0] = 0;//
-   TrajX[1] = 0.0371;
-   TrajY[1] = 0.2698;
-   TrajTheta[1] = 0;//
-   TrajX[2] = 0.1456;
-   TrajY[2] = 0.5196;
-   TrajTheta[2] = 0;//
-   TrajX[3] = 0.3174;
-   TrajY[3] = 0.7308;
-   TrajTheta[3] = 0;//
-   TrajX[4] = 0.5399;
-   TrajY[4] = 0.8879;
-   TrajTheta[4] = 0;//
-   TrajX[5] = 0.7965;
-   TrajY[5] = 0.9791;
-   TrajTheta[5] = 0;//
-   TrajX[6] = 1.0682;
-   TrajY[6] = 0.9977;
-   TrajTheta[6] = 0;//
-   TrajX[7] = 1.3349;
-   TrajY[7] = 0.9423;
-   TrajTheta[7] = 0;//
-   TrajX[8] = 1.5767;
-   TrajY[8] = 0.8170;
-   TrajTheta[8] = 0;//
-   TrajX[9] = 1.7757;
-   TrajY[9] = 0.6311;
-   TrajTheta[9] = 0;//
-   TrajX[10] = 1.9172;
-   TrajY[10] = 0.3984;
-   TrajTheta[10] = 0;//
-   TrajX[11] = 1.9907;
-   TrajY[11] =  0.1362;
-   TrajTheta[11] = 0;//
-   TrajX[12] = 1.9907;
-   TrajY[12] = -0.1362;
-   TrajTheta[12] = 0;//
-   TrajX[13] = 1.9172;
-   TrajY[13] = -0.3984;
-   TrajTheta[13] = 0;//
-   TrajX[14] = 1.7757;
-   TrajY[14] = -0.6311;
-   TrajTheta[14] = 0;//
-   TrajX[15] = 1.5767;
-   TrajY[15] = -0.8170;
-   TrajTheta[15] = 0;//
-   TrajX[16] = 1.3349;
-   TrajY[16] = -0.9423;
-   TrajTheta[16] = 0;//
-   TrajX[17] = 1.0682;
-   TrajY[17] = -0.9977;
-   TrajTheta[17] = 0;//
-   TrajX[18] = 0.7965;
-   TrajY[18] = -0.9791;
-   TrajTheta[18] = 0;//
-   TrajX[19] = 0.5399;
-   TrajY[19] = -0.8879;
-   TrajTheta[19] = 0;//
-   TrajX[20] = 0.3174;
-   TrajY[20] = -0.7308;
-   TrajTheta[20] = 0;//
-   TrajX[21] = 0.1456;
-   TrajY[21] = -0.5196;
-   TrajTheta[21] = 0;//
-   TrajX[22] = 0.0371;
-   TrajY[22] =  -0.2698;
-   TrajTheta[22] = 0;//
-   TrajX[23] = 0.0000;
-   TrajY[23] = 0.0000;
-   TrajTheta[23] = 0;//
+      AA.push_back(aux_Aa);
+      aux_BB.push_back(aux_Ba);
+  }
 
-   /*------------------------------------------------*/
+  for(int i = 1; i < HC; i++) {
+      aux_Ba = Mat::zeros(Ba.rows*i,Ba.cols,CV_32F);
+      aux_Ba.push_back(aux_BB.colRange(0,Ba.cols).rowRange(0,Ba.rows*(HP-i)));
+      hconcat(aux_BB,aux_Ba,aux_BB);
+  }
 
-   xr = yr = theta = 0;
+  BB.push_back(aux_BB);
 
-   Vref[0] = 0; //m/s
-   Vref[1] = 0;
-   Vref[2] = 0; //rad/s
+  aux_Aa.release();
+  aux_Ba.release();
+  aux_BB.release();
 
-   // Add your ros communications here.
-   start();
+  /*-----------------init vectors-----------------*/
+
+  vel[0] = vel[1] = vel[2] = 0;
+
+  xFiltrado[0] = xFiltrado[1] = xFiltrado[2] = 0;
+
+  velm[0] = velm[1] = velm[2] = 0;
+
+  x[0] = x[1] = x[2] = 0;
+
+  dU[0] = dU[1] = dU[2] = 0;
+  U[0] = U[1] = U[2] = 0;
+
+  PWM[0] = PWM[1] = PWM[2] = PWM[3] = 0;
+
+  /*-----------------init trajectory-----------------*/
+
+  TrajOK = 0;
+  Index = 0;
+  TrajPoints = 68;
+
+  //Combined:
+      TrajX[0] = 0;
+      TrajX[1] = 0.1000;
+      TrajX[2] = 0.2000;
+      TrajX[3] = 0.3000;
+      TrajX[4] = 0.4000;
+      TrajX[5] = 0.5000;
+      TrajX[6] = 0.6000;
+      TrajX[7] = 0.7000;
+      TrajX[8] = 0.8000;
+      TrajX[9] = 0.9000;
+      TrajX[10] = 1.0000;
+      TrajX[11] = 1.1000;
+      TrajX[12] = 1.2000;
+      TrajX[13] = 1.3000;
+      TrajX[14] = 1.4000;
+      TrajX[15] = 1.5000;
+      TrajX[16] = 1.6000;
+      TrajX[17] = 1.6000;
+      TrajX[18] = 1.6000;
+      TrajX[19] = 1.6000;
+      TrajX[20] = 1.6000;
+      TrajX[21] = 1.6000;
+      TrajX[22] = 1.6000;
+      TrajX[23] = 1.6000;
+      TrajX[24] = 1.6000;
+      TrajX[25] = 1.6000;
+      TrajX[26] = 1.6000;
+      TrajX[27] = 1.7000;
+      TrajX[28] = 1.8000;
+      TrajX[29] = 1.9000;
+      TrajX[30] = 2.0000;
+      TrajX[31] = 2.1000;
+      TrajX[32] = 2.1000;
+      TrajX[33] = 2.1000;
+      TrajX[34] = 2.1000;
+      TrajX[35] = 2.1000;
+      TrajX[36] = 2.1000;
+      TrajX[37] = 2.1000;
+      TrajX[38] = 2.1782;
+      TrajX[39] = 2.2545;
+      TrajX[40] = 2.3270;
+      TrajX[41] = 2.3939;
+      TrajX[42] = 2.4536;
+      TrajX[43] = 2.5045;
+      TrajX[44] = 2.5455;
+      TrajX[45] = 2.5755;
+      TrajX[46] = 2.5938;
+      TrajX[47] = 2.6000;
+      TrajX[48] = 2.5938;
+      TrajX[49] = 2.5755;
+      TrajX[50] = 2.5455;
+      TrajX[51] = 2.5045;
+      TrajX[52] = 2.4536;
+      TrajX[53] = 2.3939;
+      TrajX[54] = 2.3270;
+      TrajX[55] = 2.2545;
+      TrajX[56] = 2.1782;
+      TrajX[57] = 2.1000;
+      TrajX[58] = 2.0218;
+      TrajX[59] = 1.9455;
+      TrajX[60] = 1.8730;
+      TrajX[61] = 1.8061;
+      TrajX[62] = 1.7464;
+      TrajX[63] = 1.6955;
+      TrajX[64] = 1.6545;
+      TrajX[65] = 1.6245;
+      TrajX[66] = 1.6062;
+      TrajX[67] = 1.6000;
+
+      TrajY[0] = 0;
+      TrajY[1] = 0.1000;
+      TrajY[2] = 0.2000;
+      TrajY[3] = 0.3000;
+      TrajY[4] = 0.4000;
+      TrajY[5] = 0.5000;
+      TrajY[6] = 0.6000;
+      TrajY[7] = 0.7000;
+      TrajY[8] = 0.8000;
+      TrajY[9] = 0.9000;
+      TrajY[10] = 1.0000;
+      TrajY[11] = 1.0000;
+      TrajY[12] = 1.0000;
+      TrajY[13] = 1.0000;
+      TrajY[14] = 1.0000;
+      TrajY[15] = 1.0000;
+      TrajY[16] = 1.0000;
+      TrajY[17] = 1.1000;
+      TrajY[18] = 1.2000;
+      TrajY[19] = 1.3000;
+      TrajY[20] = 1.4000;
+      TrajY[21] = 1.5000;
+      TrajY[22] = 1.6000;
+      TrajY[23] = 1.7000;
+      TrajY[24] = 1.8000;
+      TrajY[25] = 1.9000;
+      TrajY[26] = 2.0000;
+      TrajY[27] = 2.0000;
+      TrajY[28] = 2.0000;
+      TrajY[29] = 2.0000;
+      TrajY[30] = 2.0000;
+      TrajY[31] = 2.0000;
+      TrajY[32] = 1.9000;
+      TrajY[33] = 1.8000;
+      TrajY[34] = 1.7000;
+      TrajY[35] = 1.6000;
+      TrajY[36] = 1.5000;
+      TrajY[37] = 1.5000;
+      TrajY[38] = 1.4938;
+      TrajY[39] = 1.4755;
+      TrajY[40] = 1.4455;
+      TrajY[41] = 1.4045;
+      TrajY[42] = 1.3536;
+      TrajY[43] = 1.2939;
+      TrajY[44] = 1.2270;
+      TrajY[45] = 1.1545;
+      TrajY[46] = 1.0782;
+      TrajY[47] = 1.0000;
+      TrajY[48] = 0.9218;
+      TrajY[49] = 0.8455;
+      TrajY[50] = 0.7730;
+      TrajY[51] = 0.7061;
+      TrajY[52] = 0.6464;
+      TrajY[53] = 0.5955;
+      TrajY[54] = 0.5545;
+      TrajY[55] = 0.5245;
+      TrajY[56] = 0.5062;
+      TrajY[57] = 0.5000;
+      TrajY[58] = 0.5062;
+      TrajY[59] = 0.5245;
+      TrajY[60] = 0.5545;
+      TrajY[61] = 0.5955;
+      TrajY[62] = 0.6464;
+      TrajY[63] = 0.7061;
+      TrajY[64] = 0.7730;
+      TrajY[65] = 0.8455;
+      TrajY[66] = 0.9218;
+      TrajY[67] = 1.0000;
+
+      TrajTheta[0] = 0;
+      TrajTheta[1] = 0.7854;
+      TrajTheta[2] = 0.7854;
+      TrajTheta[3] = 0.7854;
+      TrajTheta[4] = 0.7854;
+      TrajTheta[5] = 0.7854;
+      TrajTheta[6] = 0.7854;
+      TrajTheta[7] = 0.7854;
+      TrajTheta[8] = 0.7854;
+      TrajTheta[9] = 0.7854;
+      TrajTheta[10] = 0.7854;
+      TrajTheta[11] = 0;
+      TrajTheta[12] = 0;
+      TrajTheta[13] = 0;
+      TrajTheta[14] = 0;
+      TrajTheta[15] = 0;
+      TrajTheta[16] = 0;
+      TrajTheta[17] = 1.5708;
+      TrajTheta[18] = 1.5708;
+      TrajTheta[19] = 1.5708;
+      TrajTheta[20] = 1.5708;
+      TrajTheta[21] = 1.5708;
+      TrajTheta[22] = 1.5708;
+      TrajTheta[23] = 1.5708;
+      TrajTheta[24] = 1.5708;
+      TrajTheta[25] = 1.5708;
+      TrajTheta[26] = 1.5708;
+      TrajTheta[27] = 0;
+      TrajTheta[28] = 0;
+      TrajTheta[29] = 0;
+      TrajTheta[30] = 0;
+      TrajTheta[31] = 0;
+      TrajTheta[32] = 4.7124;
+      TrajTheta[33] = 4.7124;
+      TrajTheta[34] = 4.7124;
+      TrajTheta[35] = 4.7124;
+      TrajTheta[36] = 4.7124;
+      TrajTheta[37] = 2*PI;
+      TrajTheta[38] = 2*PI-0.1571;
+      TrajTheta[39] = 2*PI-0.3142;
+      TrajTheta[40] = 2*PI-0.4712;
+      TrajTheta[41] = 2*PI-0.6283;
+      TrajTheta[42] = 2*PI-0.7854;
+      TrajTheta[43] = 2*PI-0.9425;
+      TrajTheta[44] = 2*PI-1.0996;
+      TrajTheta[45] = 2*PI-1.2566;
+      TrajTheta[46] = 2*PI-1.4137;
+      TrajTheta[47] = 2*PI-1.5708;
+      TrajTheta[48] = 2*PI-1.7279;
+      TrajTheta[49] = 2*PI-1.8850;
+      TrajTheta[50] = 2*PI-2.0420;
+      TrajTheta[51] = 2*PI-2.1991;
+      TrajTheta[52] = 2*PI-2.3562;
+      TrajTheta[53] = 2*PI-2.5133;
+      TrajTheta[54] = 2*PI-2.6704;
+      TrajTheta[55] = 2*PI-2.8274;
+      TrajTheta[56] = 2*PI-2.9845;
+      TrajTheta[57] = 2*PI-3.1416;
+      TrajTheta[58] = 2*PI-3.2987;
+      TrajTheta[59] = 2*PI-3.4558;
+      TrajTheta[60] = 2*PI-3.6128;
+      TrajTheta[61] = 2*PI-3.7699;
+      TrajTheta[62] = 2*PI-3.9270;
+      TrajTheta[63] = 2*PI-4.0841;
+      TrajTheta[64] = 2*PI-4.2412;
+      TrajTheta[65] = 2*PI-4.3982;
+      TrajTheta[66] = 2*PI-4.5553;
+      TrajTheta[67] = 2*PI-4.7124;
+
+  /*------------------------------------------------*/
+
+  xr = yr = theta = 0;
+
+  Vref[0] = Vref[1] = Vref[2] = 0;
+
+  // Add your ros communications here.
+  start();
 
 	port = device;
 	std::cout << "Controller started\n";
@@ -215,9 +446,9 @@ void Controller::run()
 
 	while ( ros::ok() )
 	{
+
         if(!enable)
         {
-
             port->clearSerialData(0);
             t1.restart();
             t2.restart();
@@ -229,8 +460,6 @@ void Controller::run()
             if(readSerial()) {
                 publisher(t1.restart());
             }
-
-            trajetoria(t2.restart());
 
             old_vel[0] = vel[0];
             old_vel[1] = vel[1];
@@ -244,52 +473,101 @@ void Controller::run()
             velrad[2] = (pkg_data.m3_velocity)*0.01047197;
 
             //Aqui converter para o sistema de coordenadas do robô
-            //                vel[0] = 0*vel[0] + 0.5774*vel[1] - 0.5774*vel[2];
-            //                vel[1] = -0.6667*vel[0] + 0.3333*vel[1] + 0.3333*vel[2];
-            //                vel[2] = 3.3333*vel[0] + 3.3333*vel[1] + 3.3333*vel[2];
+            //vel[0] = 0*vel[0] + 0.5774*vel[1] - 0.5774*vel[2];
+            //vel[1] = -0.6667*vel[0] + 0.3333*vel[1] + 0.3333*vel[2];
+            //vel[2] = 3.3333*vel[0] + 3.3333*vel[1] + 3.3333*vel[2];
             //Multiplica a matriz acima comentada por 0,0505
             //para obter a vel linear a partir de velrad
             vel[0] = 0*velrad[0] + 0.0292*velrad[1] - 0.0292*velrad[2];
             vel[1] = -0.0337*velrad[0] + 0.0168*velrad[1] + 0.0168*velrad[2];
             vel[2] = 0.1683*velrad[0] + 0.1683*velrad[1] + 0.1683*velrad[2];
 
-            //Controller
-            //optmum_predictor();
-            smith_predictor();
+            //Controlador Remoto
+            if(true) {
 
-            U[0] = dU[0] + U[0];
-            U[1] = dU[1] + U[1];
-            U[2] = dU[2] + U[2];
+                trajetoria(t2.restart());
 
-            //Convertendo para PWM
-            PWM[3] = 0;
+                //'Chama' cotrolador
+                //optmum_predictor();
+                smith_predictor();
 
-            //Aqui eh preciso converter de tensão para PWM
-            aux = 255-(255/6)*(6-U[0]);
-            if(aux<0) {
-                aux = aux*(-1);
-                PWM[3] += 1;
+                U[0] = dU[0] + U[0];
+                U[1] = dU[1] + U[1];
+                U[2] = dU[2] + U[2];
+
+                //Convertendo para PWM
+                PWM[3] = 0;
+
+               //Aqui eh preciso converter de tensão para PWM
+               aux = 255-(255/6)*(6-U[0]);
+                if(aux<0) {
+                    aux = aux*(-1);
+                    PWM[3] += 1;
+                }
+                PWM[0] = (unsigned char) aux;
+
+                aux = 255-(255/6)*(6-U[1]);
+                if(aux<0) {
+                    aux = aux*(-1);
+                    PWM[3] += 2;
+                }
+                PWM[1] = (unsigned char) aux;
+
+                aux = 255-(255/6)*(6-U[2]);
+                if(aux<0) {
+                    aux = aux*(-1);
+                    PWM[3] += 4;
+                }
+                PWM[2] = (unsigned char) aux;
+
+                sC.serialSend("13A20040B09872", 2, PWM, 4, port->getFd());
+
             }
-            PWM[0] = (unsigned char) aux;
+            //Controlador Embarcado
+            else {
 
-            aux = 255-(255/6)*(6-U[1]);
-            if(aux<0) {
-                aux = aux*(-1);
-                PWM[3] += 2;
+                trajetoria(t2.restart());
+
+                char a[7], b;
+
+                int v,vn,w;
+
+                b = 0;
+
+                v = (trunc(100*Vref[0]));
+                vn = (trunc(100*Vref[1]));
+                w = (trunc(100*Vref[2]));
+
+                if(v<0) {
+                    v = -1*v;
+                    b +=1;
+                }
+
+                if(vn<0) {
+                    vn = -1*vn;
+                    b +=2;
+                }
+
+                if(w<0) {
+                    w = -1*w;
+                    b +=4;
+                }
+
+                a[0] = (char) ((0xff00 & v) >> 8);
+                a[1] = (char) (0xff & v);
+
+                a[2] = (char) ((0xff00 & vn) >> 8);
+                a[3] = (char) (0xff & vn);
+
+                a[4] = (char) ((0xff00 & w) >> 8);
+                a[5] = (char) (0xff & w);
+
+                a[6] = b;
+
+                sC.serialSend("13A20040B09872", 5, a, 7, port->getFd());
+
             }
-            PWM[1] = (unsigned char) aux;
-
-            aux = 255-(255/6)*(6-U[2]);
-            if(aux<0) {
-                aux = aux*(-1);
-                PWM[3] += 4;
-            }
-            PWM[2] = (unsigned char) aux;
-
-            // write the new control action on the serial port
-            sC.serialSend("13A20040B09872", 2, PWM, 4, port->getFd());
 		}
-
 
 		ros::spinOnce();
 		loop_rate.sleep();
@@ -316,18 +594,12 @@ bool Controller::readSerial(){
     /* set timeout value within input loop */
     Timeout.tv_usec = 150000;  /* microseconds */
     Timeout.tv_sec  = 0;  /* seconds */
-    //std::cout << "2" << std::endl;
 
     int ret = select(port->getFd()+1, &readfs, NULL, NULL, &Timeout);
-    //std::cout << "asfsdf " << ret << " fsdfsdsfd" << std::endl;
 
     if(ret) {
 
-        //std::cout << "3" << std::endl;
-
         int nr = read(port->getFd(), &rx_buffer , sizeof rx_buffer);
-
-        //std::cout << "4" << std::endl;
 
         if(nr > -1)  {
 
@@ -352,9 +624,6 @@ bool Controller::readSerial(){
                error = true;
            }
            else {
-
-               //Clear para limpa buffer
-               //port->clearSerialData(0);
                //Tudo ocorreu bem na leitura
                return true;
            }
@@ -395,7 +664,7 @@ void Controller::publisher(int dt)
 	pkg_data.m1_current = ((int) (unsigned char) rx_buffer[22])*256 + ((int) (unsigned char) rx_buffer[23]);
 	pkg_data.m2_current = ((int) (unsigned char) rx_buffer[24])*256 + ((int) (unsigned char) rx_buffer[25]);
 	pkg_data.m3_current = ((int) (unsigned char) rx_buffer[26])*256 + ((int) (unsigned char) rx_buffer[27]);
-	pkg_data.x_acelleration = ((int) (unsigned char) rx_buffer[28])*256 + ((int) (unsigned char) rx_buffer[29]);
+  pkg_data.x_acelleration = ((int) (unsigned char) rx_buffer[28])*256 + ((int) (unsigned char) rx_buffer[29]);
 	pkg_data.y_acelleration = ((int) (unsigned char) rx_buffer[30])*256 + ((int) (unsigned char) rx_buffer[31]);
 	pkg_data.angular_velocity = ((int) (unsigned char) rx_buffer[32])*256 + ((int) (unsigned char) rx_buffer[33]);
 	pkg_data.compass = ((int) (unsigned char) rx_buffer[34])*256 + ((int) (unsigned char) rx_buffer[35]);
@@ -429,9 +698,10 @@ void Controller::publisher(int dt)
 
 }
 
-
 void Controller::smith_predictor()
 {
+
+  Mat QSI;
 
 	old_x[0] = x[0];
 	old_x[1] = x[1];
@@ -466,19 +736,34 @@ void Controller::smith_predictor()
 	x[1] = velm[1] + xFiltrado[1];
 	x[2] = velm[2] + xFiltrado[2];
 
-	//Calculando a ação de controle
-	dU[0] = -Kdlqr[0][0]*(x[0]-old_x[0]) - Kdlqr[0][1]*(x[1]- old_x[1]) - Kdlqr[0][2]*(x[2]-old_x[2]);
-	dU[0] += Kdlqr[0][3]*(Vref[0] - x[0]) + Kdlqr[0][4]*(Vref[1] - x[1]) + Kdlqr[0][5]*(Vref[2] - x[2]);
+  QSI = (cv::Mat_<float>(6,1) << 0, 0, 0, 0, 0, 0);
 
-	dU[1] = -Kdlqr[1][0]*(x[0]-old_x[0]) - Kdlqr[1][1]*(x[1]- old_x[1]) - Kdlqr[1][2]*(x[2]-old_x[2]);
-	dU[1] += Kdlqr[1][3]*(Vref[0] - x[0]) + Kdlqr[1][4]*(Vref[1] - x[1]) + Kdlqr[1][5]*(Vref[2] - x[2]);
+  QSI.at<float>(0,0)= x[0]-old_x[0];
+  QSI.at<float>(1,0)= x[1]-old_x[1];
+  QSI.at<float>(2,0)= x[2]-old_x[2];
+  QSI.at<float>(3,0)= x[0];
+  QSI.at<float>(4,0)= x[1];
+  QSI.at<float>(5,0)= x[2];
 
-	dU[2] = -Kdlqr[2][0]*(x[0]-old_x[0]) - Kdlqr[2][1]*(x[1]- old_x[1]) - Kdlqr[2][2]*(x[2]-old_x[2]);
-	dU[2] += Kdlqr[2][3]*(Vref[0] - x[0]) + Kdlqr[2][4]*(Vref[1] - x[1]) + Kdlqr[2][5]*(Vref[2] - x[2]);
+  //Calculando a ação de controle preditivo sem restrições
+  Mat K = ((BB.t()*CC.t()*Q.t()*CC*BB+R).inv())*(BB.t()*CC.t()*Q.t());
+
+  K = K*(W-CC*AA*QSI);
+
+  dU[0] = K.at<float>(0,0);
+  dU[1] = K.at<float>(1,0);
+  dU[2] = K.at<float>(2,0);
+
+  QSI.release();
+  K.release();
+
 }
 
 void Controller::optmum_predictor()
 {
+
+    Mat QSI;
+
     //Encontrando o vetor de estados x'(k+1|k)
     x[0] = Ag[0][0]*(vel[0]-old_vel[0]) + Ag[0][1]*(vel[1]- old_vel[1]) + Ag[0][2]*(vel[2]-old_vel[2]);
     x[0] += Ag[0][3]*(vel[0]) + Ag[0][4]*(vel[1]) + Ag[0][5]*(vel[2]);
@@ -504,15 +789,26 @@ void Controller::optmum_predictor()
     x[5] += Ag[5][3]*(vel[0]) + Ag[5][4]*(vel[1]) + Ag[5][5]*(vel[2]);
     x[5] += Bg[5][0]*dU[0] + Bg[5][1]*dU[1] + Bg[5][2]*dU[2];
 
-    //Calculando a ação de controle utilizando o LQR
-    dU[0] = -Kdlqr[0][0]*x[0] - Kdlqr[0][1]*x[1] - Kdlqr[0][2]*x[2];
-    dU[0] += Kdlqr[0][3]*(Vref[0] - x[3]) + Kdlqr[0][4]*(Vref[1] - x[4]) + Kdlqr[0][5]*(Vref[2] - x[5]);
+    QSI = (cv::Mat_<float>(6,1) << 0, 0, 0, 0, 0, 0);
 
-    dU[1] = -Kdlqr[1][0]*x[0] - Kdlqr[1][1]*x[1] - Kdlqr[1][2]*x[2];
-    dU[1] += Kdlqr[1][3]*(Vref[0] - x[3]) + Kdlqr[1][4]*(Vref[1] - x[4]) + Kdlqr[1][5]*(Vref[2] - x[5]);
+    QSI.at<float>(0,0)= x[0];
+    QSI.at<float>(1,0)= x[1];
+    QSI.at<float>(2,0)= x[2];
+    QSI.at<float>(3,0)= x[3];
+    QSI.at<float>(4,0)= x[4];
+    QSI.at<float>(5,0)= x[5];
 
-    dU[2] = -Kdlqr[2][0]*x[0] - Kdlqr[2][1]*x[1] - Kdlqr[2][2]*x[2];
-    dU[2] += Kdlqr[2][3]*(Vref[0] - x[3]) + Kdlqr[2][4]*(Vref[1] - x[4]) + Kdlqr[2][5]*(Vref[2] - x[5]);
+    Mat K = ((BB.t()*CC.t()*Q.t()*CC*BB+R).inv())*(BB.t()*CC.t()*Q.t());
+
+    K = K*(W-CC*AA*QSI);
+
+    dU[0] = K.at<float>(0,0);
+    dU[1] = K.at<float>(1,0);
+    dU[2] = K.at<float>(2,0);
+
+    QSI.release();
+    K.release();
+
 }
 
 void Controller::log( const LogLevel &level, const std::string &msg)
@@ -559,10 +855,6 @@ void Controller::log( const LogLevel &level, const std::string &msg)
 
 void Controller::trajetoria(int time) {
 
-    float e[3];
-    float phi;
-    float Vnav = 0.3;
-
     float t = time/1000.0;
 
     xr += (vel[0]*cos(theta) - vel[1]*sin(theta))*t;
@@ -571,52 +863,89 @@ void Controller::trajetoria(int time) {
 
     TrajectoryControl(xr, yr, theta);
 
+    W.release();
+
     if(TrajOK==1) {
+
+        W = Mat::zeros(3*HP, 1, CV_32F);
+
         Vref[0] = 0;
         Vref[1] = 0;
         Vref[2] = 0;
+
     }
     else {
 
-    phi = atan2((TrajY[Index+1] - yr),(TrajX[Index+1] - xr));
+        W.create(0,0,CV_32F);
 
-    e[0] = Vnav*cos(phi);
-    e[1] = Vnav*sin(phi);
-    e[2] = TrajTheta[Index+1] - theta;
-    if (fabs(e[2]) < Rad(0.005))
-        e[2] = 0;
+        for(int i = 0; i < HP; i++){
+                int z;
 
-    Vref[0] = cos(theta)*e[0] + sin(theta)*e[1];
-    Vref[1] = -sin(theta)*e[0] + cos(theta)*e[1];
-    Vref[2] = e[2];
+                if(Index+i<TrajPoints-1)
+                    z = Index+i;
+                else
+                    z = TrajPoints-2;
+
+                Mat r = referenciaFutura(z);
+                W.push_back(r);
+        }
+
+        //Ainda utilizado devido ao log
+        Vref[0] = W.at<float>(0,0);
+        Vref[1] = W.at<float>(1,0);
+        Vref[2] = W.at<float>(2,0);
 
     }
 
 }
 
+Mat Controller::referenciaFutura(int index){
+
+    float e[3];
+    float phi;
+    float Vnav = 0.3;
+
+    phi = atan2((TrajY[index+1] - yr),(TrajX[index+1] - xr));
+
+    e[0] = Vnav*cos(phi);
+    e[1] = Vnav*sin(phi);
+    e[2] = TrajTheta[index+1] - theta;
+
+    if (fabs(e[2]) < Rad(0.005))
+        e[2] = 0;
+
+    Mat r = (cv::Mat_<float>(3,1) << cos(theta)*e[0] + sin(theta)*e[1],
+                                        -sin(theta)*e[0] + cos(theta)*e[1],
+                                        e[2]);
+
+    return r;
+}
+
 void Controller::TrajectoryControl(double x, double y, double theta)
 {
 
-double ang;
+  double ang;
 
- ang = fabs(DiffAngle(atan2((y-TrajY[Index+1]),(x-TrajX[Index+1])),atan2((TrajY[Index+1]-TrajY[Index]),(TrajX[Index+1]-TrajX[Index]))));
+  ang = fabs(DiffAngle(atan2((y-TrajY[Index+1]),(x-TrajX[Index+1])),atan2((TrajY[Index+1]-TrajY[Index]),(TrajX[Index+1]-TrajX[Index]))));
 
- if (ang < PI/2){
+  if (ang < PI/2) {
 
-   if (Index == TrajPoints-1){
-       TrajOK=1;
-   }else{
-       Index++;
-   }
+  if (Index == TrajPoints-1) {
+     TrajOK=1;
+  }
+  else {
+     Index++;
+  }
 
-    if (Index == TrajPoints-2){
-      if (Dist((x-TrajX[TrajPoints-1]),(y-TrajY[TrajPoints-1])) < 0.001)
+  if (Index == TrajPoints-2) {
+    if (Dist((x-TrajX[TrajPoints-1]),(y-TrajY[TrajPoints-1])) < 0.05) {
       TrajOK=1;
     }
- };
+  }
 
+ }
 
-};
+}
 
 double Controller::DiffAngle(double a1, double a2)
 {
@@ -639,6 +968,31 @@ double Controller::Dist(double x, double y)
 
 double Controller::Rad(double xw){
   return xw*(PI/180);
+}
+
+void Controller::print(Mat mat, int prec) {
+
+    std_msgs::String msg;
+    std::stringstream ss;
+
+    for(int i=0; i<mat.size().height; i++)
+    {
+        ss << "[";
+        for(int j=0; j<mat.size().width; j++)
+        {
+            ss << std::setprecision(prec) << mat.at<float>(i,j);
+            if(j != mat.size().width-1)
+                ss << ", ";
+            else
+                ss << "]" << endl;
+        }
+    }
+
+    ss << "\n\n";
+
+    msg.data = ss.str();
+    log(Info,msg.data);
+
 }
 
 }  // namespace ros_gui

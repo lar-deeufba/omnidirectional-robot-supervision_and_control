@@ -16,7 +16,7 @@ class SerialPort {
 	private:
 		char *port;
 		int fd;
-		struct termios tty_options;
+		struct termios tty_options, tty_options_old;
 		bool connected;
 
 		void connect(bool c);

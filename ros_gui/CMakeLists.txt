@@ -25,7 +25,7 @@ find_package(Qt4 REQUIRED COMPONENTS QtCore QtGui)
 include(${QT_USE_FILE})
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
 
-link_directories(/usr/lib/)
+link_directories(/usr/lib/ /usr/local/share/OpenCV)
 
 ## Generate messages in the 'msg' folder
 add_message_files(FILES RX_data.msg)
@@ -35,7 +35,7 @@ generate_messages(DEPENDENCIES std_msgs)
 # Since the default here is to produce only a binary, we don't worry about
 # exporting anything.
 
-catkin_package(INCLUDE_DIRS include)
+catkin_package(INCLUDE_DIRS include DEPENDS OpenCV)
 
 ##############################################################################
 # Qt Environment
@@ -69,5 +69,5 @@ file(GLOB_RECURSE QT_SOURCES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} FOLLOW_SYMLINK
 
 add_executable(ros_gui ${QT_SOURCES} ${QT_RESOURCES_CPP} ${QT_FORMS_HPP} ${QT_MOC_HPP})
 add_dependencies(ros_gui ros_gui_generate_messages_cpp rover_gencpp)
-target_link_libraries(ros_gui ${QT_LIBRARIES} ${catkin_LIBRARIES})
+target_link_libraries(ros_gui ${QT_LIBRARIES} ${catkin_LIBRARIES} ${OpenCV_LIBS})
 install(TARGETS ros_gui RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})

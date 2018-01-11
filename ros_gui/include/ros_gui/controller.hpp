@@ -23,11 +23,20 @@
 #include "serial_port.hpp"
 #include "serialCommunication.hpp"
 
+#include <opencv2/opencv.hpp>
+
 //including messages
 #include <ros_gui/RX_data.h>
 
 #define RX_BUFFER_SIZE 48
 #define PI 3.14159265
+
+#define alpha 0.85
+
+#define HP 4 //(N)
+#define HC 4 //(Nu)
+
+using namespace cv;
 
 /*****************************************************************************
 ** Namespaces
@@ -60,11 +69,15 @@ public:
     void publisher(int dt);
     void optmum_predictor();
     void smith_predictor();
+
     void trajetoria(int time);
     double DiffAngle(double a1, double a2);
     void TrajectoryControl(double x, double y, double theta);
     double Dist(double x, double y);
     double Rad(double xw);
+    Mat referenciaFutura(int index);
+
+    void print(Mat mat, int prec);
 
     /*********************
     ** Logging
@@ -97,32 +110,54 @@ private:
     static const float Kdlqr[3][6];
     static const float Ag[6][6];
     static const float Bg[6][3];
+
+
+
+    //static const float Q[3][3];
+    //static const float R[3][3];
+
+    //static const float Kd[3];
+    //static const float Gd[3];
+    //static const float alpha;
+
+    //float AA[HP*6][6];
+    //float BB[HP*6][HC*3];
+    //float CC[HP*3][HP*6];
+
     static const float Ad[3][3];
     static const float Bd[3][3];
-    static const float Kd[3];
-    static const float Gd[3];
-    static const float alpha;
+    static const float Cd[3][3];
 
-    float TrajX[100];             //vetor contendo a trajetória em X
-    float TrajY[100];             //vetor contendo a trajetória em Y
-    float TrajTheta[100];
-    int Index;
-    int TrajPoints;
-    int TrajOK;
+    //Mat Aa;
+    //Mat Ba;
+    //Mat Ca;
 
-    float xr,yr,theta;
+//    extern Mat AA;
+//    extern Mat BB;
+//    extern Mat CC;
 
-    float Vref[3];
-    float dU[3], U[3];
-    float vel[3], old_vel[3];
-    float velrad[3];
-    float x[3], old_x[3];
-    float xFiltrado[3];
-    float velm[3], new_velm[3];
-    float difvel[3];
+//    extern Mat Q;
+//    extern Mat R;
 
-    char PWM[4];
+//    extern float TrajX[100];             //vetor contendo a trajetória em X
+//    extern float TrajY[100];             //vetor contendo a trajetória em Y
+//    extern float TrajTheta[100];
+//    extern int Index;
+//    extern int TrajPoints;
+//    extern int TrajOK;
 
+//    extern float xr,yr,theta;
+
+//    extern float Vref[3];
+//    extern float dU[3], U[3];
+//    extern float vel[3], old_vel[3];
+//    extern float velrad[3];
+//    extern float x[3], old_x[3];
+//    extern float xFiltrado[3];
+//    extern float velm[3], new_velm[3];
+//    extern float difvel[3];
+
+//    extern char PWM[4];
 
 };
 
