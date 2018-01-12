@@ -2,7 +2,7 @@
 
 Credits to:
 
-* Rafael Farias
+* [Rafael Farias](https://github.com/rcfarias)
 * [Jessivaldo Santos](https://github.com/jessivaldojr)
 
 **Dependencies:**
